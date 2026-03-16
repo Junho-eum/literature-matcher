@@ -1,70 +1,211 @@
-# Getting Started with Create React App
+# RefCheck
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+An AI-powered reference validator for academic researchers. Upload your PDFs once, extract structured findings, and match them against your discussion sentences to find the best citation support — all backed by a persistent Supabase database.
 
-## Available Scripts
+---
 
-In the project directory, you can run:
+## What It Does
 
-### `npm start`
+RefCheck helps you answer: **"Which papers in my library best support this sentence?"**
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+You paste discussion sentences from your manuscript, and RefCheck scores every paper in your database (0–10) on how well it supports each sentence, with specific citation notes explaining how to use each paper.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+---
 
-### `npm test`
+## Features
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+- **One-time PDF extraction** — Upload a PDF once, Claude reads the full text and extracts structured findings. Saved to Supabase permanently. Never re-read the same PDF again.
+- **Smart Extractor** — Uses Claude Sonnet to auto-generate citation keys, titles, authors, and year directly from any PDF — no filename matching needed.
+- **Sentence-level matching** — Each discussion sentence gets an individual score and a citation note per paper.
+- **Supabase backend** — Extracted findings persist across devices and browser sessions.
+- **Abstract fallback** — Papers without uploaded PDFs can still be extracted from their abstracts.
+- **CSV export** — Download extracted paper metadata as a CSV file.
 
-### `npm run build`
+---
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+## Tech Stack
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+| Layer | Technology |
+|---|---|
+| Frontend | React (Create React App) |
+| AI | Anthropic Claude API (Haiku + Sonnet) |
+| Database | Supabase (Postgres) |
+| Proxy | http-proxy-middleware (dev) |
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+---
 
-### `npm run eject`
+## Project Structure
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+```
+src/
+├── App.js          # Main application component
+├── supabase.js     # Supabase client initialization
+├── index.js        # React entry point
+├── index.css       # Global styles (light mode enforcement)
+└── setupProxy.js   # Dev proxy for Anthropic API
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+public/
+└── index.html      # App title and favicon
+```
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+---
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+## Setup
 
-## Learn More
+### 1. Clone and install
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+```bash
+git clone https://github.com/your-username/literature-matcher.git
+cd literature-matcher
+npm install
+```
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+### 2. Set up Supabase
 
-### Code Splitting
+1. Create a free project at [supabase.com](https://supabase.com)
+2. Run this SQL in the **SQL Editor**:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+```sql
+create table papers (
+  id uuid default gen_random_uuid() primary key,
+  citation_key text unique not null,
+  title text,
+  authors text[],
+  year text,
+  url text,
+  findings jsonb,
+  source text default 'abstract',
+  extracted_at timestamp default now()
+);
 
-### Analyzing the Bundle Size
+alter table papers enable row level security;
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+create policy "Allow all" on papers
+  for all using (true) with check (true);
+```
 
-### Making a Progressive Web App
+3. Go to **Project Settings → API** and copy your Project URL and anon key.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+### 3. Configure environment variables
 
-### Advanced Configuration
+Create a `.env` file in the project root:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+```
+REACT_APP_SUPABASE_URL=https://your-project.supabase.co
+REACT_APP_SUPABASE_KEY=your-anon-public-key
+```
 
-### Deployment
+### 4. Start the app
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+```bash
+npm start
+```
 
-### `npm run build` fails to minify
+Opens at `http://localhost:3000`.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+---
+
+## Usage
+
+### Step 1 — API Key
+Go to **① API Key** and enter your Anthropic API key from [console.anthropic.com](https://console.anthropic.com).
+
+### Step 2 — Extract PDFs
+Two options:
+
+- **② Upload PDFs** — Upload PDFs from your predefined paper list. Uses Claude Haiku. Auto-matches filename to paper metadata.
+- **⑥ Smart Extract** — Upload any PDF. Uses Claude Sonnet. Auto-generates all metadata from the paper content itself.
+
+Each PDF is read once and findings are saved to Supabase. You never need to re-upload the same PDF.
+
+### Step 3 — Check your library
+Go to **③ Library** to see all extracted papers, sample findings, and which papers haven't been extracted yet.
+
+### Step 4 — Run analysis
+Go to **④ Discussion**, paste the sentences from your manuscript that need citation support, and click **▶ Run Analysis**.
+
+### Step 5 — Review results
+Go to **⑤ Results** to see papers ranked by relevance with:
+- Overall relevance score (0–10)
+- Key findings from the paper
+- Per-sentence match scores and citation notes
+- **FULL EXTRACT** or **ABSTRACT** badge
+
+---
+
+## Rate Limits
+
+The Anthropic free tier has token-per-minute limits:
+
+| Model | Limit | Recommended wait |
+|---|---|---|
+| Claude Haiku | 50k tokens/min | 30s between PDFs |
+| Claude Sonnet | 40k tokens/min | 60s between PDFs |
+
+**Upload one PDF at a time** and wait for `✓ saved` before uploading the next.
+
+---
+
+## Environment Variables
+
+| Variable | Description |
+|---|---|
+| `REACT_APP_SUPABASE_URL` | Your Supabase project URL |
+| `REACT_APP_SUPABASE_KEY` | Your Supabase anon public key |
+
+Your Anthropic API key is entered via the app UI and stored in browser localStorage — it is never hardcoded or committed to the repo.
+
+---
+
+## Deployment
+
+### Build
+
+```bash
+npm run build
+```
+
+Creates an optimized bundle in `/build`.
+
+### Deploy to GitHub Pages
+
+```bash
+npm install --save-dev gh-pages
+```
+
+Add to `package.json`:
+```json
+"homepage": "https://your-username.github.io/literature-matcher",
+"scripts": {
+  "predeploy": "npm run build",
+  "deploy": "gh-pages -d build"
+}
+```
+
+```bash
+npm run deploy
+```
+
+> **Note:** For production deployment, move the Anthropic API proxy to a server-side function (Vercel Edge Functions, Netlify Functions, etc.) to avoid exposing your API key.
+
+---
+
+## Database Schema
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | uuid | Auto-generated primary key |
+| `citation_key` | text | Unique identifier (e.g. `harbachAcceptance2013`) |
+| `title` | text | Full paper title |
+| `authors` | text[] | Author list |
+| `year` | text | Publication year |
+| `url` | text | DOI or paper URL |
+| `findings` | jsonb | Extracted findings JSON |
+| `source` | text | `"pdf"` or `"abstract"` |
+| `extracted_at` | timestamp | When extraction occurred |
+
+---
+
+## License
+
+MIT
