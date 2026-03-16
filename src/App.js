@@ -421,6 +421,29 @@ const PAPERS = [
   },
 ];
 
+// ── Smart Extract Prompt ──────────────────────────────────────────────────────
+const EXTRACT_PROMPT = `Read the paper carefully and respond with ONLY a valid JSON object — no markdown fences, no preamble, no explanation. The JSON must follow this exact schema:
+
+{
+  "citation_key": "AuthorLastnameKeywordYear — use first author's lastname + 1-2 salient camelCase topic words + 4-digit year (e.g. smithDigitalIdentity2023)",
+  "title": "full paper title exactly as it appears",
+  "authors": ["F. Lastname", "F. Lastname"],
+  "year": "4-digit year as string",
+  "url": "DOI URL if available (https://doi.org/...), else empty string",
+  "findings": {
+    "findings": [
+      "5-7 specific findings as complete declarative sentences. Each should capture a distinct empirical result, key observation, or specific claim."
+    ],
+    "methodology": "2-3 sentence description: study design type, sample/participants/data source, instruments or methods used, and analysis approach",
+    "citationUses": [
+      "3-5 sentences each starting with This paper can be cited to support claims about..."
+    ],
+    "keyArguments": [
+      "3 core theoretical, design, or policy arguments the paper makes, as complete sentences"
+    ]
+  }
+}`;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const lsGet = (k, fb = "") => {
   try {
@@ -560,6 +583,9 @@ export default function App() {
 
   const abort = useRef(false);
   const fileRef = useRef(null);
+  const [extQueue, setExtQueue] = useState([]);
+  const [extRows, setExtRows] = useState([]);
+  const extFileRef = useRef(null);
 
   // Load extracted paper keys + rows from Supabase on mount
   useEffect(() => {
@@ -762,6 +788,153 @@ Return ONLY this JSON object — no other text:
     setDbPapers(rows);
   };
 
+  // ── Smart Extract ─────────────────────────────────────────────────────────
+  const handleSmartExtract = useCallback(
+    async (files) => {
+      if (!apiSaved) {
+        setErr("Set your API key first.");
+        setTab("setup");
+        return;
+      }
+      const pdfs = Array.from(files).filter(
+        (f) => f.type === "application/pdf",
+      );
+
+      for (const file of pdfs) {
+        const id = Math.random().toString(36).slice(2);
+        setExtQueue((q) => [...q, { id, name: file.name, status: "reading" }]);
+
+        try {
+          const b64 = await readBase64(file);
+          setExtQueue((q) =>
+            q.map((x) => (x.id === id ? { ...x, status: "extracting" } : x)),
+          );
+
+          const res = await fetch("/anthropic/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 4000,
+              messages: [
+                {
+                  role: "user",
+                  content: [
+                    {
+                      type: "document",
+                      source: {
+                        type: "base64",
+                        media_type: "application/pdf",
+                        data: b64,
+                      },
+                    },
+                    { type: "text", text: EXTRACT_PROMPT },
+                  ],
+                },
+              ],
+            }),
+          });
+
+          if (!res.ok) {
+            const e = await res.json();
+            throw new Error(e.error?.message || res.statusText);
+          }
+          const data = await res.json();
+          const txt =
+            data.content
+              ?.filter((b) => b.type === "text")
+              .map((b) => b.text)
+              .join("") || "";
+          const cleaned = txt
+            .replace(/^```json\s*/i, "")
+            .replace(/^```\s*/, "")
+            .replace(/```\s*$/, "")
+            .trim();
+          const parsed = JSON.parse(cleaned);
+
+          const paper = {
+            citationKey: parsed.citation_key,
+            title: parsed.title,
+            authors: parsed.authors,
+            year: String(parsed.year),
+            url: parsed.url || "",
+          };
+          await saveFindings(paper, parsed.findings, "pdf");
+
+          const newRow = {
+            id,
+            citation_key: parsed.citation_key,
+            title: parsed.title,
+            authors: parsed.authors,
+            year: parsed.year,
+            url: parsed.url,
+            findings: parsed.findings,
+            extracted_at: new Date().toLocaleString(),
+          };
+          setExtRows((r) => [...r, newRow]);
+
+          const [keys, rows] = await Promise.all([
+            fetchExtractedKeys(),
+            fetchAllFindings(),
+          ]);
+          setExtractedKeys(keys);
+          setDbPapers(rows);
+
+          setExtQueue((q) =>
+            q.map((x) => (x.id === id ? { ...x, status: "done" } : x)),
+          );
+          setTimeout(
+            () => setExtQueue((q) => q.filter((x) => x.id !== id)),
+            3000,
+          );
+          await new Promise((res) => setTimeout(res, 60000)); // wait 60s before next PDF
+        } catch (e) {
+          setExtQueue((q) =>
+            q.map((x) =>
+              x.id === id ? { ...x, status: "error", error: e.message } : x,
+            ),
+          );
+          setTimeout(
+            () => setExtQueue((q) => q.filter((x) => x.id !== id)),
+            8000,
+          );
+        }
+      }
+    },
+    [apiKey, apiSaved],
+  );
+
+  const downloadCSV = () => {
+    if (!extRows.length) return;
+    const cols = [
+      "citation_key",
+      "title",
+      "authors",
+      "year",
+      "url",
+      "extracted_at",
+    ];
+    const esc = (v) => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+    const lines = [
+      cols.join(","),
+      ...extRows.map((r) =>
+        cols
+          .map((c) => esc(Array.isArray(r[c]) ? r[c].join("; ") : r[c]))
+          .join(","),
+      ),
+    ];
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(
+      new Blob([lines.join("\n")], { type: "text/csv" }),
+    );
+    a.download = `papers_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  };
+
   // ── Analysis ───────────────────────────────────────────────────────────────
   const run = async () => {
     if (!discussion.trim() || !apiKey) return;
@@ -928,13 +1101,14 @@ Return ONLY this JSON:
   // ── Tabs ───────────────────────────────────────────────────────────────────
   const tabs = [
     { id: "setup", label: "① API Key" },
-    { id: "pdfs", label: `② Upload PDFs` },
+    { id: "pdfs", label: "② Upload PDFs" },
     { id: "library", label: `③ Library (${extractedKeys.size})` },
     { id: "input", label: "④ Discussion" },
     {
       id: "results",
       label: `⑤ Results${results.length > 0 ? ` (${results.length})` : ""}`,
     },
+    { id: "extractor", label: "⑥ Smart Extract" },
   ];
 
   const Btn = ({ onClick, disabled, children, primary, small }) => (
@@ -1999,6 +2173,262 @@ Return ONLY this JSON:
                 Analysis complete · {results.length} relevant papers ·{" "}
                 {dbPapers.length} full extracts +{" "}
                 {PAPERS.length - dbPapers.length} abstracts
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "extractor" && (
+          <div>
+            <div
+              style={card({
+                marginBottom: 16,
+                background: T.accentLight,
+                borderColor: T.accentBorder,
+              })}
+            >
+              <span style={lbl({ color: T.accent })}>Smart Extractor</span>
+              <p style={{ color: T.textBody, lineHeight: 1.7, margin: 0 }}>
+                Uses <b>Claude Sonnet</b> with a richer prompt — auto-generates
+                citation key, title, authors, and year directly from the paper
+                content. Works for <b>any PDF</b>, not just papers in the
+                predefined list.
+              </p>
+            </div>
+
+            {!apiSaved && (
+              <div
+                style={{
+                  background: T.redLight,
+                  border: `1px solid ${T.redBorder}`,
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                  marginBottom: 14,
+                  color: T.red,
+                  fontSize: 13,
+                }}
+              >
+                ⚠ Set your API key first.
+              </div>
+            )}
+
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragging(false);
+                handleSmartExtract(e.dataTransfer.files);
+              }}
+              onClick={() => extFileRef.current?.click()}
+              style={{
+                border: `2px dashed ${dragging ? T.accent : T.inputBorder}`,
+                borderRadius: 12,
+                padding: "32px 20px",
+                textAlign: "center",
+                cursor: "pointer",
+                marginBottom: 16,
+                background: dragging ? T.accentLight : "#fff",
+                transition: "all 0.2s",
+              }}
+            >
+              <div style={{ fontSize: 28, marginBottom: 8 }}>📄</div>
+              <div style={{ color: T.textBody, fontWeight: 500 }}>
+                Drag & drop PDFs, or click to browse
+              </div>
+              <div style={{ color: T.textFaint, fontSize: 12, marginTop: 4 }}>
+                Sonnet model · richer extraction · any PDF works
+              </div>
+              <input
+                ref={extFileRef}
+                type="file"
+                accept=".pdf"
+                multiple
+                style={{ display: "none" }}
+                onChange={(e) => handleSmartExtract(e.target.files)}
+              />
+            </div>
+
+            {extQueue.map((item) => (
+              <div
+                key={item.id}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "7px 12px",
+                  background: T.subtleBg,
+                  border: `1px solid ${T.cardBorder}`,
+                  borderRadius: 6,
+                  marginBottom: 4,
+                  fontSize: 12,
+                }}
+              >
+                <span
+                  style={{
+                    color: T.textBody,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    flex: 1,
+                  }}
+                >
+                  {item.name}
+                </span>
+                <span
+                  style={{
+                    color:
+                      item.status === "done"
+                        ? T.green
+                        : item.status === "error"
+                          ? T.red
+                          : T.accent,
+                    flexShrink: 0,
+                    marginLeft: 10,
+                    fontSize: 11,
+                  }}
+                >
+                  {item.status === "reading"
+                    ? "⟳ reading…"
+                    : item.status === "extracting"
+                      ? "⟳ extracting…"
+                      : item.status === "done"
+                        ? "✓ saved"
+                        : `✗ ${item.error?.slice(0, 50)}`}
+                </span>
+              </div>
+            ))}
+
+            {extRows.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 10,
+                  }}
+                >
+                  <span style={lbl({ marginBottom: 0 })}>
+                    {extRows.length} extracted this session
+                  </span>
+                  <button
+                    onClick={downloadCSV}
+                    style={{
+                      background: T.cardBg,
+                      border: `1px solid ${T.cardBorder}`,
+                      color: T.textBody,
+                      padding: "5px 14px",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    ↓ Download CSV
+                  </button>
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      fontSize: 12,
+                    }}
+                  >
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${T.cardBorder}` }}>
+                        {[
+                          "Citation Key",
+                          "Title",
+                          "Authors",
+                          "Year",
+                          "Extracted",
+                        ].map((h) => (
+                          <th
+                            key={h}
+                            style={{
+                              textAlign: "left",
+                              padding: "6px 10px",
+                              color: T.textMuted,
+                              fontWeight: 600,
+                              fontSize: 11,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {extRows.map((r) => (
+                        <tr
+                          key={r.id}
+                          style={{ borderBottom: `1px solid ${T.cardBorder}` }}
+                        >
+                          <td
+                            style={{
+                              padding: "8px 10px",
+                              color: T.accent,
+                              fontFamily: "monospace",
+                              fontSize: 11,
+                              maxWidth: 160,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {r.citation_key}
+                          </td>
+                          <td
+                            style={{
+                              padding: "8px 10px",
+                              color: T.textBody,
+                              maxWidth: 240,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                            title={r.title}
+                          >
+                            {r.title}
+                          </td>
+                          <td
+                            style={{
+                              padding: "8px 10px",
+                              color: T.textMuted,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {(r.authors || []).slice(0, 2).join(", ")}
+                            {r.authors?.length > 2 ? "…" : ""}
+                          </td>
+                          <td
+                            style={{ padding: "8px 10px", color: T.textMuted }}
+                          >
+                            {r.year}
+                          </td>
+                          <td
+                            style={{
+                              padding: "8px 10px",
+                              color: T.textFaint,
+                              fontSize: 11,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {r.extracted_at}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
