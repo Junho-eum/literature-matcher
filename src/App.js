@@ -1210,7 +1210,7 @@ Return ONLY this JSON:
           </div>
           <div>
             <div style={{ color: T.textDark, fontWeight: 700, fontSize: 15 }}>
-              HCDID Literature Matcher
+              RefCheck
             </div>
             <div style={{ color: T.textMuted, fontSize: 12 }}>
               {PAPERS.length} papers · {extractedKeys.size} extracted in DB
